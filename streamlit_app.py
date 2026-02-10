@@ -146,6 +146,16 @@ def generate_mass_update_files(combined_df, user_initials, user_full_name):
         tuple: (saletab_excel_bytes, entrance_csv_string)
     """
     
+    # Check for required columns and provide helpful error messages
+    required_cols = ['Parcel_ID', 'SALEKEY']
+    missing_cols = [col for col in required_cols if col not in combined_df.columns]
+    if missing_cols:
+        raise ValueError(f"Missing required columns: {missing_cols}")
+    
+    # Check for Listing_Number - provide warning but continue
+    has_listing_number = 'Listing_Number' in combined_df.columns or 'Listing #' in combined_df.columns
+    listing_col = 'Listing_Number' if 'Listing_Number' in combined_df.columns else ('Listing #' if 'Listing #' in combined_df.columns else None)
+    
     # Deduplicate input by Parcel_ID first (a parcel may appear multiple times if it has multiple field mismatches)
     unique_df = combined_df.drop_duplicates(subset=['Parcel_ID'], keep='first').copy()
     
@@ -156,24 +166,23 @@ def generate_mass_update_files(combined_df, user_initials, user_full_name):
     for idx, row in unique_df.iterrows():
         main_parcel = row['Parcel_ID']
         salekey_str = str(row.get('SALEKEY', '')).strip()
-        listing_str = str(row.get('Listing_Number', '')).strip()
         additional_parcels_str = str(row.get('ADDITIONAL_PARCELS', '')).strip()
+        
+        # Get Listing Number from the correct column
+        listing_number = 0  # Default to 0 if not found
+        if listing_col:
+            listing_str = str(row.get(listing_col, '')).strip()
+            if listing_str and listing_str != 'nan' and listing_str != '':
+                first_listing = listing_str.rstrip(',').split(',')[0].strip()
+                try:
+                    listing_number = int(float(first_listing))  # Handle both int and float strings
+                except (ValueError, TypeError):
+                    listing_number = 0
         
         # Parse SALEKEYs (comma-separated)
         salekeys = []
         if salekey_str and salekey_str != 'nan':
             salekeys = [s.strip() for s in salekey_str.rstrip(',').split(',') if s.strip()]
-        
-        # Parse Listing Number (get first one)
-        listing_number = None
-        if listing_str and listing_str != 'nan':
-            first_listing = listing_str.rstrip(',').split(',')[0].strip()
-            try:
-                listing_number = int(first_listing)
-            except:
-                listing_number = 0
-        else:
-            listing_number = 0
         
         # Parse ADDITIONAL_PARCELS
         additional_parcels = []
@@ -992,6 +1001,23 @@ if mls_file and cama_file:
                     if combined_df.empty:
                         st.error("No data available to generate mass update files")
                     else:
+                        # DEBUG: Check columns
+                        st.info(f"📋 Combined data has {len(combined_df)} records")
+                        
+                        # Check if Listing_Number column exists
+                        if 'Listing_Number' not in combined_df.columns:
+                            st.error("❌ ERROR: 'Listing_Number' column not found in combined data!")
+                            st.write("Available columns:", combined_df.columns.tolist())
+                        else:
+                            # Show sample values
+                            non_null = combined_df['Listing_Number'].notna().sum()
+                            st.info(f"✓ Listing_Number column found. Non-null values: {non_null}/{len(combined_df)}")
+                            
+                            # Show sample
+                            sample = combined_df[['Parcel_ID', 'Listing_Number']].head(5)
+                            with st.expander("📊 Sample Data Preview"):
+                                st.dataframe(sample)
+                        
                         # Generate both files
                         saletab_data, entrance_data = generate_mass_update_files(
                             combined_df, 
