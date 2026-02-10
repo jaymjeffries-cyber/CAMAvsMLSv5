@@ -649,7 +649,19 @@ if mls_file and cama_file:
         st.metric("Numeric Tolerance", f"{NUMERIC_TOLERANCE}")
     
     # Run comparison button
-    if st.button("🔍 Run Comparison", type="primary", use_container_width=True):
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        run_button = st.button("🔍 Run Comparison", type="primary", use_container_width=True)
+    with col2:
+        if st.session_state.get('comparison_complete', False):
+            if st.button("🔄 Clear Results", use_container_width=True):
+                # Clear session state
+                for key in ['df_missing_cama', 'df_missing_mls', 'df_value_mismatches', 'matched_df', 'df_perfect_matches', 'comparison_complete']:
+                    if key in st.session_state:
+                        del st.session_state[key]
+                st.rerun()
+    
+    if run_button:
         
         with st.spinner("Comparing data... This may take a moment."):
             df_missing_cama, df_missing_mls, df_value_mismatches, matched_df, df_perfect_matches = \
@@ -661,6 +673,25 @@ if mls_file and cama_file:
                     cols_to_compare_categorical=COLUMNS_TO_COMPARE_CATEGORICAL,
                     window_id=window_id
                 )
+            
+            # Store results in session state
+            st.session_state['df_missing_cama'] = df_missing_cama
+            st.session_state['df_missing_mls'] = df_missing_mls
+            st.session_state['df_value_mismatches'] = df_value_mismatches
+            st.session_state['matched_df'] = matched_df
+            st.session_state['df_perfect_matches'] = df_perfect_matches
+            st.session_state['comparison_complete'] = True
+    
+    # Display results if comparison has been run
+    if st.session_state.get('comparison_complete', False):
+        # Retrieve results from session state
+        df_missing_cama = st.session_state['df_missing_cama']
+        df_missing_mls = st.session_state['df_missing_mls']
+        df_value_mismatches = st.session_state['df_value_mismatches']
+        matched_df = st.session_state['matched_df']
+        df_perfect_matches = st.session_state['df_perfect_matches']
+        
+        st.success("✅ Comparison results loaded. Scroll down to generate mass update files.")
         
         # Display results
         st.header("📈 Results Summary")
