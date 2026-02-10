@@ -135,9 +135,10 @@ def calculate_difference(val1, val2):
 def generate_mass_update_files(combined_df, user_initials, user_full_name):
     """
     Generate SALETAB_MassUpdate and MassEntrance files from combined perfect matches and value mismatches.
+    Expands ADDITIONAL_PARCELS into separate rows with corresponding SALEKEYs.
     
     Args:
-        combined_df: DataFrame with Parcel_ID, SALEKEY, Listing_Number columns
+        combined_df: DataFrame with Parcel_ID, SALEKEY, Listing_Number, ADDITIONAL_PARCELS columns
         user_initials: User initials for SALETAB USER1 field
         user_full_name: Full name for MassEntrance appraiser fields
     
@@ -145,46 +146,84 @@ def generate_mass_update_files(combined_df, user_initials, user_full_name):
         tuple: (saletab_excel_bytes, entrance_csv_string)
     """
     
-    # Helper function to extract first SALEKEY from comma-separated list
-    def get_first_salekey(salekey_str):
-        if pd.isna(salekey_str):
-            return None
-        cleaned = str(salekey_str).strip().rstrip(',')
-        if not cleaned:
-            return None
-        first = cleaned.split(',')[0].strip()
-        try:
-            return int(first)
-        except:
-            return None
+    # Deduplicate input by Parcel_ID first (a parcel may appear multiple times if it has multiple field mismatches)
+    unique_df = combined_df.drop_duplicates(subset=['Parcel_ID'], keep='first').copy()
     
-    # Helper function to extract first Listing Number from comma-separated list
-    def get_first_listing(listing_str):
-        if pd.isna(listing_str):
-            return None
-        cleaned = str(listing_str).strip().rstrip(',')
-        if not cleaned:
-            return None
-        first = cleaned.split(',')[0].strip()
-        try:
-            return int(first)
-        except:
-            return None
+    # Collect all rows for SALETAB (will include main parcels + additional parcels)
+    saletab_rows = []
+    entrance_rows = []
     
-    # Create SALETAB_MassUpdate DataFrame
-    saletab_df = pd.DataFrame()
-    saletab_df['PARID'] = combined_df['Parcel_ID'].astype(int)
-    saletab_df['SALEKEY'] = combined_df['SALEKEY'].apply(get_first_salekey)
-    saletab_df['USER11'] = combined_df['Listing_Number'].apply(get_first_listing)
-    saletab_df['SOURCE'] = 0
-    saletab_df['SALEVAL'] = 0
-    saletab_df['USER1'] = user_initials
-    saletab_df['USER2'] = pd.Timestamp.now().strftime('%Y-%m-%d')
+    for idx, row in unique_df.iterrows():
+        main_parcel = row['Parcel_ID']
+        salekey_str = str(row.get('SALEKEY', '')).strip()
+        listing_str = str(row.get('Listing_Number', '')).strip()
+        additional_parcels_str = str(row.get('ADDITIONAL_PARCELS', '')).strip()
+        
+        # Parse SALEKEYs (comma-separated)
+        salekeys = []
+        if salekey_str and salekey_str != 'nan':
+            salekeys = [s.strip() for s in salekey_str.rstrip(',').split(',') if s.strip()]
+        
+        # Parse Listing Number (get first one)
+        listing_number = None
+        if listing_str and listing_str != 'nan':
+            first_listing = listing_str.rstrip(',').split(',')[0].strip()
+            try:
+                listing_number = int(first_listing)
+            except:
+                listing_number = 0
+        else:
+            listing_number = 0
+        
+        # Parse ADDITIONAL_PARCELS
+        additional_parcels = []
+        if additional_parcels_str and additional_parcels_str != 'nan':
+            additional_parcels = [p.strip() for p in additional_parcels_str.split(',') if p.strip()]
+        
+        # All parcels (main + additional)
+        all_parcels = [main_parcel] + additional_parcels
+        
+        # Create rows - each parcel gets corresponding SALEKEY
+        for i, parcel in enumerate(all_parcels):
+            if i < len(salekeys):
+                try:
+                    salekey_int = int(salekeys[i])
+                    parcel_int = int(parcel)
+                    
+                    # Add to SALETAB
+                    saletab_rows.append({
+                        'PARID': parcel_int,
+                        'SALEKEY': salekey_int,
+                        'USER11': listing_number,
+                        'SOURCE': 0,
+                        'SALEVAL': 0,
+                        'USER1': user_initials,
+                        'USER2': pd.Timestamp.now().strftime('%Y-%m-%d')
+                    })
+                    
+                    # Add to MassEntrance
+                    entrance_rows.append({
+                        'Change Type': 'existing',
+                        'appraiser': user_full_name,
+                        'parcelnum': parcel_int,
+                        'comment': '',
+                        'Review Status': 'Reviewed',
+                        'Determination': '',
+                        'Est. Value Change': '',
+                        'Last Changed Date/Time': pd.Timestamp.now().strftime('%m/%d/%Y %H:%M'),
+                        'Last Changed By': user_full_name
+                    })
+                except (ValueError, TypeError):
+                    # Skip if conversion fails
+                    continue
     
-    # Remove rows with missing SALEKEY
-    saletab_df = saletab_df.dropna(subset=['SALEKEY'])
-    saletab_df['SALEKEY'] = saletab_df['SALEKEY'].astype(int)
-    saletab_df['USER11'] = saletab_df['USER11'].fillna(0).astype(int)
+    # Create SALETAB DataFrame
+    saletab_df = pd.DataFrame(saletab_rows)
+    
+    # Remove duplicate SALEKEYs (keep first occurrence)
+    if not saletab_df.empty:
+        saletab_df = saletab_df.drop_duplicates(subset=['SALEKEY'], keep='first')
+        saletab_df = saletab_df.sort_values('SALEKEY').reset_index(drop=True)
     
     # Create SALETAB Excel file in memory
     saletab_buffer = io.BytesIO()
@@ -193,16 +232,7 @@ def generate_mass_update_files(combined_df, user_initials, user_full_name):
     saletab_buffer.seek(0)
     
     # Create MassEntrance DataFrame
-    entrance_df = pd.DataFrame()
-    entrance_df['Change Type'] = ['existing'] * len(combined_df)
-    entrance_df['appraiser'] = [user_full_name] * len(combined_df)
-    entrance_df['parcelnum'] = combined_df['Parcel_ID'].astype(int)
-    entrance_df['comment'] = [''] * len(combined_df)
-    entrance_df['Review Status'] = ['Reviewed'] * len(combined_df)
-    entrance_df['Determination'] = [''] * len(combined_df)
-    entrance_df['Est. Value Change'] = [''] * len(combined_df)
-    entrance_df['Last Changed Date/Time'] = [pd.Timestamp.now().strftime('%m/%d/%Y %H:%M')] * len(combined_df)
-    entrance_df['Last Changed By'] = [user_full_name] * len(combined_df)
+    entrance_df = pd.DataFrame(entrance_rows)
     
     # Create MassEntrance CSV in memory
     entrance_csv = entrance_df.to_csv(index=False)
